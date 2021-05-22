@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id 'org.jetbrains.kotlin.jvm' version '1.5.0'
+}
+
+group 'org.example'
+version '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib"
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.0'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.0'
+    implementation group: 'org.asynchttpclient', name: 'async-http-client', version: '2.12.3'
+    implementation group: 'org.eclipse.jetty', name: 'jetty-server', version: '11.0.3'
+    implementation group: 'org.eclipse.jetty', name: 'jetty-servlet', version: '11.0.3'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+compileKotlin {
+    kotlinOptions {
+        jvmTarget = "1.8"
+        freeCompilerArgs += [
+            "-Xopt-in=kotlin.time.ExperimentalTime"
+        ]
+    }
+}
