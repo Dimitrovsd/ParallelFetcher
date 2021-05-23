@@ -52,32 +52,31 @@ class ParallelFetcher(
     private suspend fun executeInternal(
         requests: Collection<Request>,
     ): List<String> {
-        val channel = Channel<Unit>(capacity = settings.parallel, onBufferOverflow = BufferOverflow.SUSPEND)
-        val calls = mutableListOf<ListenableFuture<Response>>()
-        val futureResponses = mutableListOf<Deferred<String>>()
+        val parallelSlots = Channel<Unit>(capacity = settings.parallel, onBufferOverflow = BufferOverflow.SUSPEND)
+        val httpClientCalls = mutableListOf<ListenableFuture<Response>>()
+        val asyncTasks = mutableListOf<Deferred<String>>()
 
         return try {
             withTimeout(settings.globalTimeout) {
                 requests.forEach {
-                    channel.send(Unit)
-                    futureResponses.add(async {
+                    parallelSlots.send(Unit)
+                    asyncTasks.add(async {
                         val response: String = suspendCancellableCoroutine { continuation ->
-                            calls.add(executeRequest(it) { result ->
+                            httpClientCalls.add(executeRequest(it) { result ->
                                 continuation.resume(result)
                             })
                         }
-                        channel.receive()
+                        parallelSlots.receive()
                         response
                     })
                 }
-
-                futureResponses.awaitAll()
+                asyncTasks.awaitAll()
             }
         } catch (e: TimeoutCancellationException) {
-            calls.forEach {
+            httpClientCalls.forEach {
                 it.abort(GlobalTimeoutException())
             }
-            return getTimeoutResponse(futureResponses)
+            return getTimeoutResponse(asyncTasks)
         }
     }
 
@@ -88,13 +87,11 @@ class ParallelFetcher(
         val requestBuilder = client.prepareRequest(request)
         requestBuilder.setRequestTimeout(settings.requestTimeout.inWholeMilliseconds.toInt())
 
-        println("Request timeout is: ${settings.requestTimeout.inWholeMilliseconds.toInt()}")
-
         val futureResponse = requestBuilder.execute()
         return futureResponse.addListener({
             try {
                 val responseBody = futureResponse.get().responseBody
-                println("Got response: $responseBody")
+                println("Got successful response: $responseBody")
                 onFutureCompleted(responseBody)
             } catch (e: ExecutionException) {
                 println("Got exception during request: $e")
@@ -106,9 +103,9 @@ class ParallelFetcher(
     }
 
     private fun getTimeoutResponse(
-        futureResponses: Collection<Deferred<String>>,
+        asyncTasks: Collection<Deferred<String>>,
     ): List<String> {
-        return futureResponses.map {
+        return asyncTasks.map {
             if (it.isCompleted && !it.isCancelled) {
                 it.getCompleted()
             } else {
