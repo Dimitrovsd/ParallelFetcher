@@ -25,12 +25,16 @@ private const val NO_TOTAL_RETRIES_LIMIT = 0.0
 private val IMMEDIATE_EXECUTOR = { runnable: Runnable -> runnable.run() }
 
 data class FetcherSettings(
-    // Supported features
+    /**
+     * Supported features
+     */
     val parallel: Int = 1,
     val globalTimeout: Duration,
     val requestTimeout: Duration = DEFAULT_REQUEST_TIMEOUT,
 
-    // TODO
+    /**
+     * Unsupported features
+     */
     val softTimeout: Duration,
     val totalRetriesCoef: Double = NO_TOTAL_RETRIES_LIMIT,
     val requestRetries: Int = 0,
@@ -79,7 +83,7 @@ class ParallelFetcher(
 
     private fun executeRequest(
         request: Request,
-        onFutureCompleted: (String) -> Unit
+        onFutureCompleted: (String) -> Unit,
     ): ListenableFuture<Response> {
         val requestBuilder = client.prepareRequest(request)
         requestBuilder.setRequestTimeout(settings.requestTimeout.inWholeMilliseconds.toInt())
