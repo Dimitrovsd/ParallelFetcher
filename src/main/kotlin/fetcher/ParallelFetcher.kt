@@ -1,6 +1,8 @@
 package fetcher
 
 import fetcher.exception.GlobalTimeoutException
+import fetcher.model.FetcherSettings
+import fetcher.model.RequestData
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.CoroutineScope
@@ -17,29 +19,8 @@ import org.asynchttpclient.ListenableFuture
 import org.asynchttpclient.Request
 import org.asynchttpclient.Response
 import kotlin.coroutines.resume
-import kotlin.time.Duration
-
-private val DEFAULT_REQUEST_TIMEOUT = Duration.minutes(5)
-private const val NO_TOTAL_RETRIES_LIMIT = 0.0
 
 private val IMMEDIATE_EXECUTOR = { runnable: Runnable -> runnable.run() }
-
-data class FetcherSettings(
-    /**
-     * Supported features
-     */
-    val parallel: Int = 1,
-    val globalTimeout: Duration,
-    val requestTimeout: Duration = DEFAULT_REQUEST_TIMEOUT,
-    val requestRetries: Int = 0,
-
-    /**
-     * Unsupported features
-     */
-    val softTimeout: Duration,
-    val totalRetriesCoef: Double = NO_TOTAL_RETRIES_LIMIT,
-    val failFast: Boolean = false,
-)
 
 class ParallelFetcher(
     private val client: AsyncHttpClient,
@@ -74,7 +55,7 @@ class ParallelFetcher(
         requestData: RequestData,
         parentScope: CoroutineScope,
     ) {
-         val retries = parentScope.async {
+        val retries = parentScope.async {
             repeat(settings.requestRetries + 1) {
                 if (requestData.response == "Success") {
                     return@async

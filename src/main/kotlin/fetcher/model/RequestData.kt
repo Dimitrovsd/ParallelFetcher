@@ -1,4 +1,4 @@
-package fetcher
+package fetcher.model
 
 import java.util.concurrent.CopyOnWriteArrayList
 import org.asynchttpclient.ListenableFuture
