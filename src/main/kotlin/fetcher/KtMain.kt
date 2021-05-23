@@ -1,4 +1,4 @@
-package client
+package fetcher
 
 import org.asynchttpclient.DefaultAsyncHttpClient
 import org.asynchttpclient.RequestBuilder
@@ -11,7 +11,8 @@ fun main() {
             globalTimeout = Duration.seconds(10),
             parallel = 1,
             softTimeout = Duration.seconds(2),
-            requestTimeout = Duration.seconds(2)))
+            requestTimeout = Duration.seconds(2),
+        ))
 
     val requests = List(1) {
         RequestBuilder()

@@ -1,6 +1,6 @@
-package client
+package fetcher
 
-import client.exception.GlobalTimeoutException
+import fetcher.exception.GlobalTimeoutException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.Deferred

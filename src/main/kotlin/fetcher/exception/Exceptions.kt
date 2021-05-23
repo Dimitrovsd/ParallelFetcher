@@ -1,3 +1,3 @@
-package client.exception
+package fetcher.exception
 
 class GlobalTimeoutException: Exception()
