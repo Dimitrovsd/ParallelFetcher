@@ -8,19 +8,23 @@ fun main() {
     val client = DefaultAsyncHttpClient()
     val parallelFetcher = ParallelFetcher(client = client,
         settings = FetcherSettings(
-            globalTimeout = Duration.INFINITE,
-            parallel = 2,
-            softTimeout = Duration.INFINITE))
+            globalTimeout = Duration.seconds(10),
+            parallel = 1,
+            softTimeout = Duration.seconds(2),
+            requestTimeout = Duration.seconds(2)))
 
-    val requests = List(10) {
+    val requests = List(1) {
         RequestBuilder()
             .setUrl("http://127.0.0.1:8999")
             .build()
     }
 
-    val responses = parallelFetcher.execute(requests)
-    responses.forEach {
-        println("Responses: $it")
+    try {
+        val responses = parallelFetcher.execute(requests)
+        println("Responses: $responses")
+    } catch (e: Exception) {
+        println(e)
     }
+
     client.close()
 }
