@@ -3,7 +3,7 @@ package fetcher
 import fetcher.exception.GlobalTimeoutException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeoutException
-import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -31,13 +31,13 @@ data class FetcherSettings(
     val parallel: Int = 1,
     val globalTimeout: Duration,
     val requestTimeout: Duration = DEFAULT_REQUEST_TIMEOUT,
+    val requestRetries: Int = 0,
 
     /**
      * Unsupported features
      */
     val softTimeout: Duration,
     val totalRetriesCoef: Double = NO_TOTAL_RETRIES_LIMIT,
-    val requestRetries: Int = 0,
     val failFast: Boolean = false,
 )
 
@@ -46,49 +46,62 @@ class ParallelFetcher(
     private val settings: FetcherSettings,
 ) {
     fun execute(requests: Collection<Request>): List<String> = runBlocking {
-        executeInternal(requests)
+        executeInternal(requests.map { RequestData(it) })
     }
 
     private suspend fun executeInternal(
-        requests: Collection<Request>,
+        requestDatas: Collection<RequestData>,
     ): List<String> {
         val parallelSlots = Channel<Unit>(capacity = settings.parallel, onBufferOverflow = BufferOverflow.SUSPEND)
-        val httpClientCalls = mutableListOf<ListenableFuture<Response>>()
-        val asyncTasks = mutableListOf<Deferred<String>>()
 
         return try {
             withTimeout(settings.globalTimeout) {
-                requests.forEach {
+                requestDatas.map { requestData ->
                     parallelSlots.send(Unit)
-                    asyncTasks.add(async {
-                        val response: String = suspendCancellableCoroutine { continuation ->
-                            httpClientCalls.add(executeRequest(it) { result ->
-                                continuation.resume(result)
-                            })
-                        }
+                    async {
+                        executeRequest(requestData, this)
                         parallelSlots.receive()
-                        response
-                    })
-                }
-                asyncTasks.awaitAll()
+                    }
+                }.awaitAll()
             }
+            requestDatas.map { it.response!! }
         } catch (e: TimeoutCancellationException) {
-            httpClientCalls.forEach {
-                it.abort(GlobalTimeoutException())
-            }
-            return getTimeoutResponse(asyncTasks)
+            return handleGlobalTimeout(requestDatas)
         }
     }
 
-    private fun executeRequest(
-        request: Request,
+    private suspend fun executeRequest(
+        requestData: RequestData,
+        parentScope: CoroutineScope,
+    ) {
+         val retries = parentScope.async {
+            repeat(settings.requestRetries + 1) {
+                if (requestData.response == "Success") {
+                    return@async
+                }
+
+                requestData.response = suspendCancellableCoroutine { continuation ->
+                    executeRequestAsync(requestData) { result ->
+                        continuation.resume(result)
+                    }
+                }
+            }
+        }
+
+        retries.await()
+    }
+
+    private fun executeRequestAsync(
+        requestData: RequestData,
         onFutureCompleted: (String) -> Unit,
     ): ListenableFuture<Response> {
-        val requestBuilder = client.prepareRequest(request)
+        val requestBuilder = client.prepareRequest(requestData.request)
         requestBuilder.setRequestTimeout(settings.requestTimeout.inWholeMilliseconds.toInt())
 
         val futureResponse = requestBuilder.execute()
-        return futureResponse.addListener({
+        requestData.callsInFly.add(futureResponse)
+        futureResponse.addListener({
+            requestData.callsInFly.remove(futureResponse)
             try {
                 val responseBody = futureResponse.get().responseBody
                 println("Got successful response: $responseBody")
@@ -100,14 +113,33 @@ class ParallelFetcher(
                 }
             }
         }, IMMEDIATE_EXECUTOR)
+
+        return futureResponse
     }
 
-    private fun getTimeoutResponse(
-        asyncTasks: Collection<Deferred<String>>,
+    private fun handleGlobalTimeout(
+        requestDatas: Collection<RequestData>,
     ): List<String> {
-        return asyncTasks.map {
-            if (it.isCompleted && !it.isCancelled) {
-                it.getCompleted()
+        cancelCallsInFly(requestDatas)
+        return getGlobalTimeoutResponse(requestDatas)
+    }
+
+    private fun cancelCallsInFly(
+        requestDatas: Collection<RequestData>,
+    ) {
+        requestDatas.forEach { requestData ->
+            requestData.callsInFly.forEach { callInFly ->
+                callInFly.abort(GlobalTimeoutException())
+            }
+        }
+    }
+
+    private fun getGlobalTimeoutResponse(
+        requestDatas: Collection<RequestData>,
+    ): List<String> {
+        return requestDatas.map { requestData ->
+            if (requestData.response != null) {
+                requestData.response!!
             } else {
                 "Global timeout"
             }

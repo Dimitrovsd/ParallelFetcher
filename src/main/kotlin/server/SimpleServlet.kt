@@ -6,8 +6,18 @@ import jakarta.servlet.http.HttpServletResponse
 
 class SimpleServlet : HttpServlet() {
 
+    var counter = 0
+
     override fun doGet(req: HttpServletRequest, resp: HttpServletResponse) {
-        Thread.sleep(5000) // imitating hard work
+        counter = counter xor 1
+
+        // imitating hard work
+        if (counter == 0) {
+            Thread.sleep(5000)
+        } else {
+            Thread.sleep(2000)
+        }
+
         resp.outputStream.print("Success")
     }
 }

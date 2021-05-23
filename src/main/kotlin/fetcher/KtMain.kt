@@ -8,10 +8,11 @@ fun main() {
     val client = DefaultAsyncHttpClient()
     val parallelFetcher = ParallelFetcher(client = client,
         settings = FetcherSettings(
-            globalTimeout = Duration.seconds(10),
+            globalTimeout = Duration.seconds(100000),
             parallel = 1,
             softTimeout = Duration.seconds(2),
-            requestTimeout = Duration.seconds(2),
+            requestTimeout = Duration.seconds(3),
+            requestRetries = 5,
         ))
 
     val requests = List(1) {
