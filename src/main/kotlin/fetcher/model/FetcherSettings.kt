@@ -13,11 +13,11 @@ data class FetcherSettings(
     val globalTimeout: Duration,
     val requestTimeout: Duration = DEFAULT_REQUEST_TIMEOUT,
     val requestRetries: Int = 0,
+    val softTimeout: Duration,
 
     /**
      * Unsupported features
      */
-    val softTimeout: Duration,
     val totalRetriesCoef: Double = NO_TOTAL_RETRIES_LIMIT,
     val failFast: Boolean = false,
 )
