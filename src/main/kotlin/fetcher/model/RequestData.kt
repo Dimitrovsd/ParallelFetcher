@@ -11,4 +11,5 @@ class RequestData(
 ) {
     val callsInFly = CopyOnWriteArrayList<ListenableFuture<Response>>()
     var response: String? = null
+    var retriesCount: Int = 0
 }

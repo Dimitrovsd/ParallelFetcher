@@ -4,20 +4,16 @@ import fetcher.exception.CancelRequestException
 import fetcher.exception.GlobalTimeoutException
 import fetcher.model.FetcherSettings
 import fetcher.model.NO_GLOBAL_RETRY_LIMIT
-import fetcher.model.NO_TOTAL_RETRIES_LIMIT
 import fetcher.model.RequestData
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -27,7 +23,6 @@ import org.asynchttpclient.ListenableFuture
 import org.asynchttpclient.Request
 import org.asynchttpclient.Response
 import kotlin.coroutines.resume
-import kotlin.math.floor
 
 private val IMMEDIATE_EXECUTOR = { runnable: Runnable -> runnable.run() }
 
@@ -41,7 +36,7 @@ class ParallelFetcher(
     private var globalRetriesLimit = NO_GLOBAL_RETRY_LIMIT
 
     fun execute(requests: Collection<Request>): List<String> = runBlocking {
-        globalRetriesLimit = getGlobalRetriesLimit(requests.size)
+        globalRetriesLimit = settings.getGlobalRetriesLimit(requests.size)
 
         val requestDatas = requests.mapIndexed { index, request ->
             RequestData(index.toLong(), request)
@@ -56,57 +51,59 @@ class ParallelFetcher(
     ) {
         try {
             withTimeout(settings.globalTimeout) {
-                requestDatas.map { requestData ->
-                    async {
-                        launch {
-                            executeRequest(requestData, this)
-                        }
-                    }
-                }.awaitAll()
+                requestDatas.forEach { requestData ->
+                    executeRequest(requestData, this)
+                }
             }
         } catch (e: TimeoutCancellationException) {
             handleGlobalTimeout(requestDatas)
+        } catch (e: CancellationException) {
+            handleFailFast(requestDatas)
         }
     }
 
     private suspend fun executeRequest(
         requestData: RequestData,
-        requestScope: CoroutineScope,
+        requestsScope: CoroutineScope,
     ) {
         try {
-            repeat(settings.requestRetries + 1) { tryIndex ->
-                if (!requestScope.isActive) {
-                    log(requestData, "request scope is not active, no more work needed")
-                    return
-                }
-                log(requestData, "preparing hard retry №$tryIndex...")
-                executeTry(requestData, requestScope, tryIndex != 0)
+            requestsScope.launch {
+                executeTry(requestData, this, requestsScope, false)
             }
         } catch (e: CancellationException) {
-            log(requestData, "request done or cancelled")
+            handleRequestCancel(requestData)
         }
     }
 
     private suspend fun executeTry(
         requestData: RequestData,
         requestScope: CoroutineScope,
+        requestsScope: CoroutineScope,
         isRetry: Boolean = true,
     ) {
-        if (isRetry && !canRetry()) {
-            log(requestData, "can't execute a try: running out of global retries")
-            return
+        if (isRetry) {
+            if (!canRetry(requestData)) {
+                log(requestData, "can't execute a try -- running out of retries")
+                return
+            } else {
+                requestData.retriesCount++
+                globalRetries++
+            }
         }
 
-        log(requestData, "preparing for try...")
+        log(requestData, "waiting for slot...")
         parallelSlots.send(Unit)
         log(requestData, "executing one try...")
 
         if (!isRetry) {
             requestScope.launch {
-                log(requestData, "preparing for soft retry...")
+                log(requestData, "waiting for slot for soft retry...")
                 delay(settings.softTimeout)
                 log(requestData, "executing soft retry...")
-                executeTry(requestData, requestScope)
+
+                if (requestData.retriesCount == 0) {
+                    executeTry(requestData, requestScope, requestsScope)
+                }
             }
         }
 
@@ -119,15 +116,11 @@ class ParallelFetcher(
         parallelSlots.receive()
 
         log(requestData, "got response in executeTry: $response")
-        processResponse(response, requestData, requestScope)
+        processResponse(response, requestData, requestScope, requestsScope)
     }
 
-    private fun canRetry(): Boolean {
-        if (globalRetries > globalRetriesLimit) {
-            return false
-        }
-        globalRetries++
-        return true
+    private fun canRetry(requestData: RequestData): Boolean {
+        return requestData.retriesCount < settings.requestRetries && globalRetries < globalRetriesLimit
     }
 
     private fun executeAsyncHttpCall(
@@ -157,37 +150,68 @@ class ParallelFetcher(
         return futureResponse
     }
 
-    private fun processResponse(
+    private suspend fun processResponse(
         response: String,
         requestData: RequestData,
         requestScope: CoroutineScope,
+        requestsScope: CoroutineScope,
     ) {
         requestData.response = response
         if (response == "Success") {
             onSuccess(requestData, requestScope)
+        } else {
+            onFailure(requestData, requestScope, requestsScope)
         }
     }
 
     private fun onSuccess(
         requestData: RequestData,
-        parentScope: CoroutineScope,
+        requestScope: CoroutineScope,
     ) {
         log(requestData, "onSuccess")
-        parentScope.cancel()
-        requestData.cancelCallsInFly(CancelRequestException())
+        requestScope.cancel()
+    }
+
+    private suspend fun onFailure(
+        requestData: RequestData,
+        requestScope: CoroutineScope,
+        requestsScope: CoroutineScope
+    ) {
+        log(requestData, "onFailure")
+        if (settings.failFast) {
+            requestsScope.cancel()
+        } else {
+            executeTry(requestData, requestScope, requestsScope)
+        }
     }
 
     private fun handleGlobalTimeout(
         requestDatas: Collection<RequestData>,
     ) {
+        println("handleGlobalTimeout")
         requestDatas.cancelCallsInFly(GlobalTimeoutException())
         fillGlobalTimeoutResponse(requestDatas)
+    }
+
+    private fun handleFailFast(
+        requestDatas: Collection<RequestData>,
+    ) {
+        println("handleFailFast")
+        requestDatas.cancelCallsInFly(GlobalTimeoutException())
+        fillFailFastResponse(requestDatas)
+    }
+
+    private fun handleRequestCancel(
+        requestData: RequestData,
+    ) {
+        log(requestData, "request done or cancelled")
+        requestData.cancelCallsInFly(CancelRequestException())
     }
 
     private fun Collection<RequestData>.cancelCallsInFly(
         exception: Exception,
     ) {
-        this.forEach { requestData ->
+        forEach { requestData ->
             requestData.cancelCallsInFly(exception)
         }
     }
@@ -195,36 +219,8 @@ class ParallelFetcher(
     private fun RequestData.cancelCallsInFly(
         exception: Exception,
     ) {
-        this.callsInFly.forEach { callInFly ->
+        callsInFly.forEach { callInFly ->
             callInFly.abort(exception)
         }
-    }
-
-    private fun fillGlobalTimeoutResponse(
-        requestDatas: Collection<RequestData>,
-    ) {
-        requestDatas.forEach { requestData ->
-            requestData.response = requestData.response ?: "Global timeout"
-        }
-    }
-
-    private fun getGlobalRetriesLimit(
-        requestCount: Int,
-    ): Int {
-        val requestRetries: Int = settings.requestRetries
-        val totalRetriesCoef: Double = settings.totalRetriesCoef
-
-        return if (totalRetriesCoef == NO_TOTAL_RETRIES_LIMIT) {
-            NO_GLOBAL_RETRY_LIMIT
-        } else {
-            floor(requestRetries + totalRetriesCoef * requestCount).toInt()
-        }
-    }
-
-    private fun log(
-        requestData: RequestData,
-        message: String,
-    ) {
-        println("Request ${requestData.id}: $message")
     }
 }
