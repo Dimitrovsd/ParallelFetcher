@@ -6,9 +6,9 @@ import org.asynchttpclient.Request
 import org.asynchttpclient.Response
 
 class RequestData(
+    val id: Long,
     val request: Request,
 ) {
-    var requestsDone = 0
     val callsInFly = CopyOnWriteArrayList<ListenableFuture<Response>>()
     var response: String? = null
 }

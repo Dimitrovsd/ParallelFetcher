@@ -43,7 +43,9 @@ class ParallelFetcher(
     fun execute(requests: Collection<Request>): List<String> = runBlocking {
         globalRetriesLimit = getGlobalRetriesLimit(requests.size)
 
-        val requestDatas = requests.map { RequestData(it) }
+        val requestDatas = requests.mapIndexed { index, request ->
+            RequestData(index.toLong(), request)
+        }
         executeRequests(requestDatas)
 
         requestDatas.map { it.response!! }
@@ -74,14 +76,14 @@ class ParallelFetcher(
         try {
             repeat(settings.requestRetries + 1) { tryIndex ->
                 if (!requestScope.isActive) {
-                    println("Request scope is not active, no more work needed")
+                    log(requestData, "request scope is not active, no more work needed")
                     return
                 }
-                println("Preparing for hard retry...")
+                log(requestData, "preparing hard retry №$tryIndex...")
                 executeTry(requestData, requestScope, tryIndex != 0)
             }
         } catch (e: CancellationException) {
-            println("Request done or cancelled")
+            log(requestData, "request done or cancelled")
         }
     }
 
@@ -91,18 +93,19 @@ class ParallelFetcher(
         isRetry: Boolean = true,
     ) {
         if (isRetry && !canRetry()) {
+            log(requestData, "can't execute a try: running out of global retries")
             return
         }
 
-        println("Preparing for try...")
+        log(requestData, "preparing for try...")
         parallelSlots.send(Unit)
-        println("Executing one try")
+        log(requestData, "executing one try...")
 
         if (!isRetry) {
             requestScope.launch {
-                println("Preparing for soft retry...")
+                log(requestData, "preparing for soft retry...")
                 delay(settings.softTimeout)
-                println("Executing soft retry")
+                log(requestData, "executing soft retry...")
                 executeTry(requestData, requestScope)
             }
         }
@@ -112,16 +115,15 @@ class ParallelFetcher(
                 continuation.resume(result)
             }
         }
-        println("Continuation resumed")
+        log(requestData, "continuation resumed")
         parallelSlots.receive()
 
-        println("Got response in executeTry: $response")
+        log(requestData, "got response in executeTry: $response")
         processResponse(response, requestData, requestScope)
     }
 
     private fun canRetry(): Boolean {
         if (globalRetries > globalRetriesLimit) {
-            println("Can't execute a try: running out of global retries")
             return false
         }
         globalRetries++
@@ -132,7 +134,7 @@ class ParallelFetcher(
         requestData: RequestData,
         onFutureCompleted: (String) -> Unit,
     ): ListenableFuture<Response> {
-        println("Executing one async http call")
+        log(requestData, "executing one async http call")
         val requestBuilder = client.prepareRequest(requestData.request)
         requestBuilder.setRequestTimeout(settings.requestTimeout.inWholeMilliseconds.toInt())
 
@@ -142,10 +144,10 @@ class ParallelFetcher(
             requestData.callsInFly.remove(futureResponse)
             try {
                 val responseBody = futureResponse.get().responseBody
-                println("Got successful response in callback: $responseBody")
+                log(requestData, "got successful response in callback: $responseBody")
                 onFutureCompleted(responseBody)
             } catch (e: ExecutionException) {
-                println("Got exception during request: $e")
+                log(requestData, "got exception during request: $e")
                 if (e.cause is TimeoutException) {
                     onFutureCompleted("Request timeout")
                 }
@@ -170,7 +172,7 @@ class ParallelFetcher(
         requestData: RequestData,
         parentScope: CoroutineScope,
     ) {
-        println("onSuccess")
+        log(requestData, "onSuccess")
         parentScope.cancel()
         requestData.cancelCallsInFly(CancelRequestException())
     }
@@ -217,5 +219,12 @@ class ParallelFetcher(
         } else {
             floor(requestRetries + totalRetriesCoef * requestCount).toInt()
         }
+    }
+
+    private fun log(
+        requestData: RequestData,
+        message: String,
+    ) {
+        println("Request ${requestData.id}: $message")
     }
 }
