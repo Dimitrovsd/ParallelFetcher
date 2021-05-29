@@ -3,6 +3,8 @@ package fetcher
 import fetcher.exception.CancelRequestException
 import fetcher.exception.GlobalTimeoutException
 import fetcher.model.FetcherSettings
+import fetcher.model.NO_GLOBAL_RETRY_LIMIT
+import fetcher.model.NO_TOTAL_RETRIES_LIMIT
 import fetcher.model.RequestData
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutionException
@@ -25,6 +27,7 @@ import org.asynchttpclient.ListenableFuture
 import org.asynchttpclient.Request
 import org.asynchttpclient.Response
 import kotlin.coroutines.resume
+import kotlin.math.floor
 
 private val IMMEDIATE_EXECUTOR = { runnable: Runnable -> runnable.run() }
 
@@ -34,15 +37,22 @@ class ParallelFetcher(
 ) {
 
     private val parallelSlots = Channel<Unit>(capacity = settings.parallel, onBufferOverflow = BufferOverflow.SUSPEND)
+    private var globalRetries = 0
+    private var globalRetriesLimit = NO_GLOBAL_RETRY_LIMIT
 
     fun execute(requests: Collection<Request>): List<String> = runBlocking {
-        executeRequests(requests.map { RequestData(it) })
+        globalRetriesLimit = getGlobalRetriesLimit(requests.size)
+
+        val requestDatas = requests.map { RequestData(it) }
+        executeRequests(requestDatas)
+
+        requestDatas.map { it.response!! }
     }
 
     private suspend fun executeRequests(
         requestDatas: Collection<RequestData>,
-    ): List<String> {
-        return try {
+    ) {
+        try {
             withTimeout(settings.globalTimeout) {
                 requestDatas.map { requestData ->
                     async {
@@ -52,9 +62,8 @@ class ParallelFetcher(
                     }
                 }.awaitAll()
             }
-            requestDatas.map { it.response!! }
         } catch (e: TimeoutCancellationException) {
-            return handleGlobalTimeout(requestDatas)
+            handleGlobalTimeout(requestDatas)
         }
     }
 
@@ -69,7 +78,7 @@ class ParallelFetcher(
                     return
                 }
                 println("Preparing for hard retry...")
-                executeTry(requestData, requestScope, tryIndex == 0)
+                executeTry(requestData, requestScope, tryIndex != 0)
             }
         } catch (e: CancellationException) {
             println("Request done or cancelled")
@@ -79,13 +88,17 @@ class ParallelFetcher(
     private suspend fun executeTry(
         requestData: RequestData,
         requestScope: CoroutineScope,
-        executeWithSoftRetry: Boolean = false,
+        isRetry: Boolean = true,
     ) {
+        if (isRetry && !canRetry()) {
+            return
+        }
+
         println("Preparing for try...")
         parallelSlots.send(Unit)
         println("Executing one try")
 
-        if (executeWithSoftRetry) {
+        if (!isRetry) {
             requestScope.launch {
                 println("Preparing for soft retry...")
                 delay(settings.softTimeout)
@@ -104,6 +117,15 @@ class ParallelFetcher(
 
         println("Got response in executeTry: $response")
         processResponse(response, requestData, requestScope)
+    }
+
+    private fun canRetry(): Boolean {
+        if (globalRetries >= globalRetriesLimit) {
+            println("Can't execute a try: running out of global retries")
+            return false
+        }
+        globalRetries++
+        return true
     }
 
     private fun executeAsyncHttpCall(
@@ -155,9 +177,9 @@ class ParallelFetcher(
 
     private fun handleGlobalTimeout(
         requestDatas: Collection<RequestData>,
-    ): List<String> {
+    ) {
         requestDatas.cancelCallsInFly(GlobalTimeoutException())
-        return getGlobalTimeoutResponse(requestDatas)
+        fillGlobalTimeoutResponse(requestDatas)
     }
 
     private fun Collection<RequestData>.cancelCallsInFly(
@@ -176,15 +198,24 @@ class ParallelFetcher(
         }
     }
 
-    private fun getGlobalTimeoutResponse(
+    private fun fillGlobalTimeoutResponse(
         requestDatas: Collection<RequestData>,
-    ): List<String> {
-        return requestDatas.map { requestData ->
-            if (requestData.response != null) {
-                requestData.response!!
-            } else {
-                "Global timeout"
-            }
+    ) {
+        requestDatas.forEach { requestData ->
+            requestData.response = requestData.response ?: "Global timeout"
+        }
+    }
+
+    private fun getGlobalRetriesLimit(
+        requestCount: Int,
+    ): Int {
+        val requestRetries: Int = settings.requestRetries
+        val totalRetriesCoef: Double = settings.totalRetriesCoef
+
+        return if (totalRetriesCoef == NO_TOTAL_RETRIES_LIMIT) {
+            NO_GLOBAL_RETRY_LIMIT
+        } else {
+            floor(requestRetries + totalRetriesCoef * requestCount).toInt()
         }
     }
 }
