@@ -120,7 +120,7 @@ class ParallelFetcher(
     }
 
     private fun canRetry(): Boolean {
-        if (globalRetries >= globalRetriesLimit) {
+        if (globalRetries > globalRetriesLimit) {
             println("Can't execute a try: running out of global retries")
             return false
         }
