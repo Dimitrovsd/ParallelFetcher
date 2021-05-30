@@ -2,12 +2,12 @@ package fetcher
 
 import fetcher.exception.CancelRequestException
 import fetcher.exception.GlobalTimeoutException
+import fetcher.exception.RequestTimeoutException
 import fetcher.model.FetcherSettings
 import fetcher.model.NO_GLOBAL_RETRY_LIMIT
 import fetcher.model.RequestData
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
@@ -129,15 +129,26 @@ class ParallelFetcher(
     }
 
     private suspend fun executeCall(requestData: RequestData): String {
-        log(requestData, "suspending coroutine for http call")
-        val response: String = suspendCancellableCoroutine { continuation ->
-            executeAsyncHttpCall(requestData) { result ->
-                continuation.resume(result)
-            }
-        }
-        log(requestData, "resuming coroutine")
+        var futureResponse: ListenableFuture<Response>? = null
 
-        return response
+        return try {
+            withTimeout(settings.requestTimeout) {
+                log(requestData, "suspending coroutine for http call")
+                val response: String = suspendCancellableCoroutine { continuation ->
+                    futureResponse = executeAsyncHttpCall(requestData) { result ->
+                        continuation.resume(result)
+                    }
+                }
+                log(requestData, "resuming coroutine")
+
+                response
+            }
+        } catch (e: CancellationException) {
+            log(requestData, "call cancelled due to request timeout")
+            futureResponse?.abort(RequestTimeoutException())
+
+            "Request timeout"
+        }
     }
 
     private fun executeAsyncHttpCall(
@@ -158,9 +169,6 @@ class ParallelFetcher(
                 onFutureCompleted(responseBody)
             } catch (e: ExecutionException) {
                 log(requestData, "got exception during request: $e")
-                if (e.cause is TimeoutException) {
-                    onFutureCompleted("Request timeout")
-                }
             }
         }, IMMEDIATE_EXECUTOR)
 
