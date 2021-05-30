@@ -169,6 +169,7 @@ class ParallelFetcher(
                 onFutureCompleted(responseBody)
             } catch (e: ExecutionException) {
                 log(requestData, "got exception during request: $e")
+                onFutureCompleted("Unknown failure")
             }
         }, IMMEDIATE_EXECUTOR)
 
@@ -203,10 +204,17 @@ class ParallelFetcher(
         requestsScope: CoroutineScope
     ) {
         log(requestData, "onFailure")
-        if (requestData.callsInFly.isEmpty() && settings.failFast) {
-            requestsScope.cancel()
-        } else {
+
+        val requestFailed = !canRetry(requestData) && requestData.callsInFly.isEmpty()
+        if (!requestFailed) {
             executeRetry(requestData, requestScope, requestsScope)
+        } else {
+            if (settings.failFast) {
+                requestsScope.cancel()
+            } else {
+                // sortRetry корутина может еще быть не завершена к этому моменту, нужно явно отменить запрос
+                requestScope.cancel()
+            }
         }
     }
 
