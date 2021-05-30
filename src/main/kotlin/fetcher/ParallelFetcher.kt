@@ -46,9 +46,7 @@ class ParallelFetcher(
         requestDatas.map { it.response!! }
     }
 
-    private suspend fun executeRequests(
-        requestDatas: Collection<RequestData>,
-    ) {
+    private suspend fun executeRequests(requestDatas: Collection<RequestData>) {
         try {
             withTimeout(settings.globalTimeout) {
                 requestDatas.forEach { requestData ->
@@ -62,10 +60,7 @@ class ParallelFetcher(
         }
     }
 
-    private suspend fun executeRequest(
-        requestData: RequestData,
-        requestsScope: CoroutineScope,
-    ) {
+    private suspend fun executeRequest(requestData: RequestData, requestsScope: CoroutineScope) {
         try {
             requestsScope.launch {
                 executeTry(requestData, this, requestsScope, true)
@@ -83,19 +78,14 @@ class ParallelFetcher(
     ) {
         log(requestData, "waiting for slot...")
         parallelSlots.send(Unit)
-        log(requestData, "executing one try...")
+        log(requestData, "executing one try")
 
         if (withSoftRetry) {
             executeSoftRetry(requestData, requestScope, requestsScope)
         }
 
-        log(requestData, "suspending coroutine for http call")
-        val response: String = suspendCancellableCoroutine { continuation ->
-            executeAsyncHttpCall(requestData) { result ->
-                continuation.resume(result)
-            }
-        }
-        log(requestData, "resuming coroutine")
+        val response = executeCall(requestData)
+        log(requestData, "releasing a slot")
         parallelSlots.receive()
 
         log(requestData, "got response in executeTry: $response")
@@ -110,7 +100,7 @@ class ParallelFetcher(
         requestScope.launch {
             log(requestData, "waiting for slot for soft retry...")
             delay(settings.softTimeout)
-            log(requestData, "executing soft retry...")
+            log(requestData, "executing soft retry")
 
             if (requestData.retriesCount == 0) {
                 executeRetry(requestData, requestScope, requestsScope)
@@ -136,6 +126,18 @@ class ParallelFetcher(
 
     private fun canRetry(requestData: RequestData): Boolean {
         return requestData.retriesCount < settings.requestRetries && globalRetries < globalRetriesLimit
+    }
+
+    private suspend fun executeCall(requestData: RequestData): String {
+        log(requestData, "suspending coroutine for http call")
+        val response: String = suspendCancellableCoroutine { continuation ->
+            executeAsyncHttpCall(requestData) { result ->
+                continuation.resume(result)
+            }
+        }
+        log(requestData, "resuming coroutine")
+
+        return response
     }
 
     private fun executeAsyncHttpCall(
@@ -193,7 +195,7 @@ class ParallelFetcher(
         requestsScope: CoroutineScope
     ) {
         log(requestData, "onFailure")
-        if (settings.failFast) {
+        if (requestData.callsInFly.isEmpty() && settings.failFast) {
             requestsScope.cancel()
         } else {
             executeRetry(requestData, requestScope, requestsScope)
