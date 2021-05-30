@@ -156,10 +156,8 @@ class ParallelFetcher(
         onFutureCompleted: (String) -> Unit,
     ): ListenableFuture<Response> {
         log(requestData, "executing one async http call")
-        val requestBuilder = client.prepareRequest(requestData.request)
-        requestBuilder.setRequestTimeout(settings.requestTimeout.inWholeMilliseconds.toInt())
 
-        val futureResponse = requestBuilder.execute()
+        val futureResponse = client.executeRequest(requestData.request)
         requestData.callsInFly.add(futureResponse)
         futureResponse.addListener({
             requestData.callsInFly.remove(futureResponse)
