@@ -143,7 +143,7 @@ class ParallelFetcher(
 
                 response
             }
-        } catch (e: CancellationException) {
+        } catch (e: TimeoutCancellationException) {
             log(requestData, "call cancelled due to request timeout")
             futureResponse?.abort(RequestTimeoutException())
 
